@@ -1,201 +1,168 @@
 const admin = require('firebase-admin');
 
-// 1. Check Firebase Secret
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-  console.error("❌ ERROR: GitHub Secret 'FIREBASE_SERVICE_ACCOUNT' is missing!");
-  console.error("👉 Please add FIREBASE_SERVICE_ACCOUNT in GitHub Repository Settings -> Secrets and variables -> Actions.");
-  process.exit(1);
-}
-
+// 1. Initialize Firebase Admin safely
 let serviceAccount;
 try {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT secret is missing in GitHub Repository Secrets!");
+  }
+  const rawSecret = process.env.FIREBASE_SERVICE_ACCOUNT.trim();
+  serviceAccount = JSON.parse(rawSecret);
 } catch (err) {
-  console.error("❌ ERROR: Invalid JSON in FIREBASE_SERVICE_ACCOUNT secret.");
-  console.error(err.message);
+  console.error("❌ Firebase Secret Error:", err.message);
+  console.error("👉 Please ensure FIREBASE_SERVICE_ACCOUNT secret in GitHub settings contains valid JSON key content.");
   process.exit(1);
 }
 
-// 2. Initialize Firebase Admin
-try {
+if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
-  console.log("✅ Firebase Admin Initialized Successfully!");
-} catch (err) {
-  console.error("❌ Firebase Admin Initialization Failed:", err.message);
-  process.exit(1);
 }
 
 const db = admin.firestore();
 
-// Helper to fetch JSON from API using native fetch
-async function fetchJson(url) {
-  try {
-    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch (e) {
-    console.warn(`Failed to fetch from ${url}:`, e.message);
-    return null;
-  }
+// Helpers
+function formatTeamName(name) {
+  if (!name) return "Team";
+  return name.replace(/\b(FC|SC|United|City|CF)\b/gi, '').trim() || name;
 }
 
-// Main Updater Function
-async function updateSportsEvents() {
-  console.log("🚀 Starting Sports Events Fetch...");
+function getLogoUrl(teamName) {
+  const clean = encodeURIComponent(formatTeamName(teamName));
+  return `https://ui-avatars.com/api/?name=${clean}&background=0D8ABC&color=fff&size=128&bold=true`;
+}
 
-  const eventsList = [];
+// Multi-Source Fetching (Cricket + Football)
+async function fetchSportsEvents() {
+  const events = [];
+  const now = Date.now();
 
-  // 1. Fetch Football Events from ESPN API
-  const footballUrls = [
-    'https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard',
-    'https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard',
-    'https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard',
-    'https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard'
+  // 1. Fetch Football & Multi-Sports from ESPN
+  const espnLeagues = [
+    'soccer/eng.1', 'soccer/esp.1', 'soccer/ita.1', 'soccer/ger.1', 
+    'soccer/fra.1', 'soccer/usa.1', 'soccer/uefa.champions',
+    'cricket/icc'
   ];
 
-  for (const url of footballUrls) {
-    const data = await fetchJson(url);
-    if (data && data.events) {
-      for (const ev of data.events) {
-        try {
+  for (const league of espnLeagues) {
+    try {
+      const res = await fetch(`https://site.api.espn.com/apis/site/v2/sports/${league}/scoreboard`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      
+      if (data.events && Array.isArray(data.events)) {
+        for (const ev of data.events) {
           const competition = ev.competitions?.[0];
           if (!competition) continue;
 
           const team1 = competition.competitors?.[0];
           const team2 = competition.competitors?.[1];
 
-          const title = ev.shortName || `${team1?.team?.shortDisplayName || 'Team A'} vs ${team2?.team?.shortDisplayName || 'Team B'}`;
-          const team1Logo = team1?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team1?.team?.name || 'T1')}&background=0D8ABC&color=fff`;
-          const team2Logo = team2?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team2?.team?.name || 'T2')}&background=E31B23&color=fff`;
+          const t1Name = team1?.team?.displayName || team1?.team?.name || "Team A";
+          const t2Name = team2?.team?.displayName || team2?.team?.name || "Team B";
 
-          const category = 'Football';
-          const status = ev.status?.type?.state === 'in' ? 'LIVE' : (ev.status?.type?.state === 'post' ? 'FINISHED' : 'UPCOMING');
-          const startTime = new Date(ev.date || Date.now()).toISOString();
+          const t1Logo = team1?.team?.logo || getLogoUrl(t1Name);
+          const t2Logo = team2?.team?.logo || getLogoUrl(t2Name);
 
-          eventsList.push({
-            id: `espn_fb_${ev.id}`,
-            title: title,
+          const eventTime = new Date(ev.date).getTime();
+          if (isNaN(eventTime)) continue;
+
+          // Category determination
+          const category = league.includes('cricket') ? 'Cricket' : 'Football';
+          const matchTitle = `${t1Name} vs ${t2Name}`;
+
+          events.push({
+            id: `auto_${ev.id || Math.random().toString(36).substring(2, 9)}`,
+            name: matchTitle,
             category: category,
-            status: status,
-            team1Logo: team1Logo,
-            team2Logo: team2Logo,
-            streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-            startTime: startTime,
-            updatedAt: new Date().toISOString()
+            title: ev.name || matchTitle,
+            team1Name: t1Name,
+            team2Name: t2Name,
+            team1Flag: t1Logo,
+            team2Flag: t2Logo,
+            matchTime: eventTime,
+            endTime: eventTime + (3 * 60 * 60 * 1000), // 3 hours duration
+            stream_url: "",
+            isHidden: false
           });
-        } catch (e) {
-          console.warn("Error parsing event:", e.message);
         }
       }
+    } catch (e) {
+      console.log(`Fetch skipped for ${league}:`, e.message);
     }
   }
 
-  // 2. Fetch Cricket Events from ESPN API
-  const cricketUrls = [
-    'https://site.api.espn.com/apis/site/v2/sports/cricket/all/scoreboard',
-    'https://site.api.espn.com/apis/site/v2/sports/cricket/8880/scoreboard' // International
-  ];
+  // Deduplicate by name & team combination
+  const uniqueEvents = [];
+  const seenKeys = new Set();
 
-  for (const url of cricketUrls) {
-    const data = await fetchJson(url);
-    if (data && data.events) {
-      for (const ev of data.events) {
-        try {
-          const competition = ev.competitions?.[0];
-          if (!competition) continue;
-
-          const team1 = competition.competitors?.[0];
-          const team2 = competition.competitors?.[1];
-
-          const title = ev.shortName || `${team1?.team?.name || 'Team 1'} vs ${team2?.team?.name || 'Team 2'}`;
-          const team1Logo = team1?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team1?.team?.name || 'C1')}&background=1B5E20&color=fff`;
-          const team2Logo = team2?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team2?.team?.name || 'C2')}&background=0D47A1&color=fff`;
-
-          const status = ev.status?.type?.state === 'in' ? 'LIVE' : (ev.status?.type?.state === 'post' ? 'FINISHED' : 'UPCOMING');
-          const startTime = new Date(ev.date || Date.now()).toISOString();
-
-          eventsList.push({
-            id: `espn_cr_${ev.id}`,
-            title: title,
-            category: 'Cricket',
-            status: status,
-            team1Logo: team1Logo,
-            team2Logo: team2Logo,
-            streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-            startTime: startTime,
-            updatedAt: new Date().toISOString()
-          });
-        } catch (e) {
-          console.warn("Error parsing cricket event:", e.message);
-        }
-      }
+  for (const ev of events) {
+    const key = `${ev.team1Name.toLowerCase()}_vs_${ev.team2Name.toLowerCase()}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueEvents.push(ev);
     }
   }
 
-  console.log(`📊 Total raw matches fetched: ${eventsList.length}`);
+  // Sort upcoming & live events chronologically
+  uniqueEvents.sort((a, b) => a.matchTime - b.matchTime);
 
-  // Fallback Featured Matches if API returns empty at midnight
-  if (eventsList.length === 0) {
-    console.log("⚠️ No live events found from API currently. Adding high-profile featured matches...");
-    const now = new Date();
-    eventsList.push(
-      {
-        id: "feat_cricket_1",
-        title: "India vs Bangladesh - T20 World Cup Match",
-        category: "Cricket",
-        status: "LIVE",
-        team1Logo: "https://flagsapi.com/IN/flat/64.png",
-        team2Logo: "https://flagsapi.com/BD/flat/64.png",
-        streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-        startTime: now.toISOString(),
-        updatedAt: now.toISOString()
-      },
-      {
-        id: "feat_football_1",
-        title: "Real Madrid vs Barcelona - El Clasico",
-        category: "Football",
-        status: "UPCOMING",
-        team1Logo: "https://ui-avatars.com/api/?name=Real+Madrid&background=111&color=fff",
-        team2Logo: "https://ui-avatars.com/api/?name=Barcelona&background=A50044&color=fff",
-        streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-        startTime: new Date(now.getTime() + 3600000 * 2).toISOString(),
-        updatedAt: now.toISOString()
-      }
-    );
-  }
+  // Filter out events that finished over 2 hours ago
+  const validEvents = uniqueEvents.filter(ev => ev.matchTime + (3 * 60 * 60 * 1000) > now);
 
-  // Deduplicate by ID
-  const uniqueEventsMap = new Map();
-  for (const item of eventsList) {
-    if (!uniqueEventsMap.has(item.id)) {
-      uniqueEventsMap.set(item.id, item);
-    }
-  }
-
-  // Take top 10 unique events to optimize Firebase daily write quota
-  const finalEvents = Array.from(uniqueEventsMap.values()).slice(0, 10);
-
-  console.log(`🔥 Writing ${finalEvents.length} unique events to Firebase Firestore...`);
-
-  // Write to Firestore 'live_events' collection
-  const batch = db.batch();
-  for (const event of finalEvents) {
-    const docRef = db.collection('live_events').doc(event.id);
-    batch.set(docRef, event, { merge: true });
-  }
-
-  await batch.commit();
-  console.log("✅ Firestore batch update completed successfully!");
+  // Take top 10 rolling matches
+  return validEvents.slice(0, 10);
 }
 
-updateSportsEvents()
-  .then(() => {
-    console.log("🎉 All Done!");
-    process.exit(0);
-  })
-  .catch((err) => {
-    console.error("❌ Fatal Execution Error:", err);
+async function run() {
+  console.log("🚀 Starting Sports Auto Updater...");
+  
+  try {
+    const freshEvents = await fetchSportsEvents();
+    console.log(`⚽ Found ${freshEvents.length} fresh events from Sports API.`);
+
+    if (freshEvents.length === 0) {
+      console.log("⚠️ No events fetched. Skipping database update.");
+      return;
+    }
+
+    // Read current existing live_events in Firestore to preserve existing stream_urls
+    const snapshot = await db.collection('live_events').get();
+    const existingMap = new Map();
+    snapshot.docs.forEach(doc => {
+      existingMap.set(doc.id, doc.data());
+    });
+
+    const batch = db.batch();
+
+    // 1. Clear old non-matching docs to keep exact 10 rolling queue
+    const freshIds = new Set(freshEvents.map(e => e.id));
+    snapshot.docs.forEach(doc => {
+      if (!freshIds.has(doc.id)) {
+        batch.delete(doc.ref);
+      }
+    });
+
+    // 2. Set/Update fresh 10 events
+    for (const ev of freshEvents) {
+      const docRef = db.collection('live_events').doc(ev.id);
+      const existing = existingMap.get(ev.id);
+
+      // Preserve manually entered stream_url if present
+      if (existing && existing.stream_url && existing.stream_url.length > 0) {
+        ev.stream_url = existing.stream_url;
+      }
+
+      batch.set(docRef, ev, { merge: true });
+    }
+
+    await batch.commit();
+    console.log(`✅ Successfully updated Firestore with ${freshEvents.length} rolling events!`);
+  } catch (error) {
+    console.error("❌ Error running updater:", error);
     process.exit(1);
-  });
+  }
+}
+
+run();
