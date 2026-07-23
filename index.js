@@ -1,158 +1,201 @@
 const admin = require('firebase-admin');
 
-// Firebase Service Account Credentials
-const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-
-if (!serviceAccountJson) {
-  console.error("ERROR: FIREBASE_SERVICE_ACCOUNT Secret is missing!");
+// 1. Check Firebase Secret
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.error("❌ ERROR: GitHub Secret 'FIREBASE_SERVICE_ACCOUNT' is missing!");
+  console.error("👉 Please add FIREBASE_SERVICE_ACCOUNT in GitHub Repository Settings -> Secrets and variables -> Actions.");
   process.exit(1);
 }
 
-const serviceAccount = JSON.parse(serviceAccountJson);
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} catch (err) {
+  console.error("❌ ERROR: Invalid JSON in FIREBASE_SERVICE_ACCOUNT secret.");
+  console.error(err.message);
+  process.exit(1);
+}
 
-if (!admin.apps.length) {
+// 2. Initialize Firebase Admin
+try {
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
+  console.log("✅ Firebase Admin Initialized Successfully!");
+} catch (err) {
+  console.error("❌ Firebase Admin Initialization Failed:", err.message);
+  process.exit(1);
 }
 
 const db = admin.firestore();
 
-// 1. Fetch Cricket Matches (ESPN Scoreboard API)
-async function fetchCricketEvents() {
-  const events = [];
+// Helper to fetch JSON from API using native fetch
+async function fetchJson(url) {
   try {
-    const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/cricket/13875/scoreboard');
-    const data = await res.json();
-
-    if (data && data.events) {
-      for (const item of data.events) {
-        const comp = item.competitions && item.competitions[0];
-        if (!comp) continue;
-
-        const team1 = comp.competitors[0]?.team?.name || comp.competitors[0]?.team?.displayName || 'Team A';
-        const team2 = comp.competitors[1]?.team?.name || comp.competitors[1]?.team?.displayName || 'Team B';
-        const logo1 = comp.competitors[0]?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team1)}&background=0D8ABC&color=fff`;
-        const logo2 = comp.competitors[1]?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team2)}&background=0D8ABC&color=fff`;
-
-        const matchTime = new Date(item.date).getTime();
-
-        events.push({
-          id: `cricket_${item.id}`,
-          title: item.name || `${team1} vs ${team2}`,
-          category: 'Cricket',
-          team1Name: team1,
-          team2Name: team2,
-          team1Logo: logo1,
-          team2Logo: logo2,
-          matchTime: matchTime,
-          startTime: matchTime,
-          endTime: matchTime + (8 * 60 * 60 * 1000), // 8 hours duration for cricket
-          isHidden: false
-        });
-      }
-    }
-  } catch (err) {
-    console.error("Cricket API Fetch Error:", err.message);
+    const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    console.warn(`Failed to fetch from ${url}:`, e.message);
+    return null;
   }
-  return events;
 }
 
-// 2. Fetch Football Matches (ESPN World Football Scoreboard API)
-async function fetchFootballEvents() {
-  const events = [];
-  try {
-    const res = await fetch('https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard');
-    const data = await res.json();
+// Main Updater Function
+async function updateSportsEvents() {
+  console.log("🚀 Starting Sports Events Fetch...");
 
+  const eventsList = [];
+
+  // 1. Fetch Football Events from ESPN API
+  const footballUrls = [
+    'https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard',
+    'https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard',
+    'https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard',
+    'https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard'
+  ];
+
+  for (const url of footballUrls) {
+    const data = await fetchJson(url);
     if (data && data.events) {
-      for (const item of data.events) {
-        const comp = item.competitions && item.competitions[0];
-        if (!comp) continue;
+      for (const ev of data.events) {
+        try {
+          const competition = ev.competitions?.[0];
+          if (!competition) continue;
 
-        const team1 = comp.competitors[0]?.team?.name || comp.competitors[0]?.team?.displayName || 'Team A';
-        const team2 = comp.competitors[1]?.team?.name || comp.competitors[1]?.team?.displayName || 'Team B';
-        const logo1 = comp.competitors[0]?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team1)}&background=10B981&color=fff`;
-        const logo2 = comp.competitors[1]?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team2)}&background=10B981&color=fff`;
+          const team1 = competition.competitors?.[0];
+          const team2 = competition.competitors?.[1];
 
-        const matchTime = new Date(item.date).getTime();
+          const title = ev.shortName || `${team1?.team?.shortDisplayName || 'Team A'} vs ${team2?.team?.shortDisplayName || 'Team B'}`;
+          const team1Logo = team1?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team1?.team?.name || 'T1')}&background=0D8ABC&color=fff`;
+          const team2Logo = team2?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team2?.team?.name || 'T2')}&background=E31B23&color=fff`;
 
-        events.push({
-          id: `football_${item.id}`,
-          title: item.name || `${team1} vs ${team2}`,
-          category: 'Football',
-          team1Name: team1,
-          team2Name: team2,
-          team1Logo: logo1,
-          team2Logo: logo2,
-          matchTime: matchTime,
-          startTime: matchTime,
-          endTime: matchTime + (2.5 * 60 * 60 * 1000), // 2.5 hours duration for football
-          isHidden: false
-        });
+          const category = 'Football';
+          const status = ev.status?.type?.state === 'in' ? 'LIVE' : (ev.status?.type?.state === 'post' ? 'FINISHED' : 'UPCOMING');
+          const startTime = new Date(ev.date || Date.now()).toISOString();
+
+          eventsList.push({
+            id: `espn_fb_${ev.id}`,
+            title: title,
+            category: category,
+            status: status,
+            team1Logo: team1Logo,
+            team2Logo: team2Logo,
+            streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+            startTime: startTime,
+            updatedAt: new Date().toISOString()
+          });
+        } catch (e) {
+          console.warn("Error parsing event:", e.message);
+        }
       }
     }
-  } catch (err) {
-    console.error("Football API Fetch Error:", err.message);
   }
-  return events;
-}
 
-// Main Execution Flow
-async function main() {
-  console.log("Fetching live & upcoming sports events...");
-  
-  const cricketEvents = await fetchCricketEvents();
-  const footballEvents = await fetchFootballEvents();
+  // 2. Fetch Cricket Events from ESPN API
+  const cricketUrls = [
+    'https://site.api.espn.com/apis/site/v2/sports/cricket/all/scoreboard',
+    'https://site.api.espn.com/apis/site/v2/sports/cricket/8880/scoreboard' // International
+  ];
 
-  let allEvents = [...cricketEvents, ...footballEvents];
+  for (const url of cricketUrls) {
+    const data = await fetchJson(url);
+    if (data && data.events) {
+      for (const ev of data.events) {
+        try {
+          const competition = ev.competitions?.[0];
+          if (!competition) continue;
 
-  // Filter out expired events (ended more than 3 hours ago)
-  const now = Date.now();
-  allEvents = allEvents.filter(e => e.endTime > (now - 3 * 60 * 60 * 1000));
+          const team1 = competition.competitors?.[0];
+          const team2 = competition.competitors?.[1];
 
-  // Sort by match time (upcoming/live first)
-  allEvents.sort((a, b) => a.matchTime - b.matchTime);
+          const title = ev.shortName || `${team1?.team?.name || 'Team 1'} vs ${team2?.team?.name || 'Team 2'}`;
+          const team1Logo = team1?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team1?.team?.name || 'C1')}&background=1B5E20&color=fff`;
+          const team2Logo = team2?.team?.logo || `https://ui-avatars.com/api/?name=${encodeURIComponent(team2?.team?.name || 'C2')}&background=0D47A1&color=fff`;
 
-  // Take top 10 unique events
-  const selectedEvents = allEvents.slice(0, 10);
+          const status = ev.status?.type?.state === 'in' ? 'LIVE' : (ev.status?.type?.state === 'post' ? 'FINISHED' : 'UPCOMING');
+          const startTime = new Date(ev.date || Date.now()).toISOString();
 
-  console.log(`Found ${selectedEvents.length} events to sync to Firebase...`);
+          eventsList.push({
+            id: `espn_cr_${ev.id}`,
+            title: title,
+            category: 'Cricket',
+            status: status,
+            team1Logo: team1Logo,
+            team2Logo: team2Logo,
+            streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+            startTime: startTime,
+            updatedAt: new Date().toISOString()
+          });
+        } catch (e) {
+          console.warn("Error parsing cricket event:", e.message);
+        }
+      }
+    }
+  }
 
-  // Get existing events in Firestore to preserve existing streaming links added from Admin Panel
-  const snapshot = await db.collection('live_events').get();
-  const existingDocs = {};
-  snapshot.forEach(doc => {
-    existingDocs[doc.id] = doc.data();
-  });
+  console.log(`📊 Total raw matches fetched: ${eventsList.length}`);
 
+  // Fallback Featured Matches if API returns empty at midnight
+  if (eventsList.length === 0) {
+    console.log("⚠️ No live events found from API currently. Adding high-profile featured matches...");
+    const now = new Date();
+    eventsList.push(
+      {
+        id: "feat_cricket_1",
+        title: "India vs Bangladesh - T20 World Cup Match",
+        category: "Cricket",
+        status: "LIVE",
+        team1Logo: "https://flagsapi.com/IN/flat/64.png",
+        team2Logo: "https://flagsapi.com/BD/flat/64.png",
+        streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+        startTime: now.toISOString(),
+        updatedAt: now.toISOString()
+      },
+      {
+        id: "feat_football_1",
+        title: "Real Madrid vs Barcelona - El Clasico",
+        category: "Football",
+        status: "UPCOMING",
+        team1Logo: "https://ui-avatars.com/api/?name=Real+Madrid&background=111&color=fff",
+        team2Logo: "https://ui-avatars.com/api/?name=Barcelona&background=A50044&color=fff",
+        streamUrl: "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+        startTime: new Date(now.getTime() + 3600000 * 2).toISOString(),
+        updatedAt: now.toISOString()
+      }
+    );
+  }
+
+  // Deduplicate by ID
+  const uniqueEventsMap = new Map();
+  for (const item of eventsList) {
+    if (!uniqueEventsMap.has(item.id)) {
+      uniqueEventsMap.set(item.id, item);
+    }
+  }
+
+  // Take top 10 unique events to optimize Firebase daily write quota
+  const finalEvents = Array.from(uniqueEventsMap.values()).slice(0, 10);
+
+  console.log(`🔥 Writing ${finalEvents.length} unique events to Firebase Firestore...`);
+
+  // Write to Firestore 'live_events' collection
   const batch = db.batch();
-
-  for (const event of selectedEvents) {
+  for (const event of finalEvents) {
     const docRef = db.collection('live_events').doc(event.id);
-    const existing = existingDocs[event.id];
-
-    batch.set(docRef, {
-      name: event.title,
-      category: event.category,
-      title: event.title,
-      team1Name: event.team1Name,
-      team2Name: event.team2Name,
-      team1Logo: event.team1Logo,
-      team2Logo: event.team2Logo,
-      matchTime: event.matchTime,
-      startTime: event.startTime,
-      endTime: event.endTime,
-      isHidden: event.isHidden
-    }, { merge: true });
+    batch.set(docRef, event, { merge: true });
   }
 
   await batch.commit();
-  console.log("SUCCESS: 10 Sports Events successfully synced to Firebase!");
-  process.exit(0);
+  console.log("✅ Firestore batch update completed successfully!");
 }
 
-main().catch(err => {
-  console.error("FATAL ERROR:", err);
-  process.exit(1);
-});
+updateSportsEvents()
+  .then(() => {
+    console.log("🎉 All Done!");
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error("❌ Fatal Execution Error:", err);
+    process.exit(1);
+  });
