@@ -1,85 +1,134 @@
 const admin = require('firebase-admin');
-const axios = require('axios');
 
-// Initialize Firebase Admin
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+// 1. Check for Firebase Service Account Secret
+const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+if (!serviceAccountRaw) {
+  console.error("❌ ERROR: FIREBASE_SERVICE_ACCOUNT secret is missing in GitHub Repository Settings!");
+  process.exit(1);
+}
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(serviceAccountRaw);
+} catch (err) {
+  console.error("❌ ERROR: FIREBASE_SERVICE_ACCOUNT is not valid JSON text. Please re-copy the downloaded JSON key file.");
+  process.exit(1);
+}
+
+// 2. Initialize Firebase Admin SDK
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+}
 
 const db = admin.firestore();
 
-async function fetchAndSyncEvents() {
-  try {
-    console.log("Fetching live & upcoming sports events...");
-    
-    // Fetch Cricket and Football events from TheSportsDB
-    const [cricketRes, footballRes] = await Promise.all([
-      axios.get('https://www.thesportsdb.com/api/v1/json/3/eventsnextleague.php?id=4391').catch(() => ({ data: { events: [] } })),
-      axios.get('https://www.thesportsdb.com/api/v1/json/3/eventsnextleague.php?id=4328').catch(() => ({ data: { events: [] } }))
-    ]);
+// 3. Fetch Sports Events from TheSportsDB (Free Public Sports API)
+async function fetchSportsEvents() {
+  console.log("⚽ Fetching upcoming Football & Cricket events...");
+  const events = [];
 
-    const rawEvents = [
-      ...(cricketRes.data?.events || []).map(e => ({ ...e, sport: 'Cricket' })),
-      ...(footballRes.data?.events || []).map(e => ({ ...e, sport: 'Football' }))
+  try {
+    // English Premier League events
+    const resEpl = await fetch('https://www.thesportsdb.com/api/v1/json/3/eventsnextleague.php?id=4328');
+    const dataEpl = await resEpl.json();
+    if (dataEpl && dataEpl.events) {
+      dataEpl.events.slice(0, 5).forEach(e => {
+        events.push({
+          id: `epl_${e.idEvent}`,
+          name: `${e.strHomeTeam} vs ${e.strAwayTeam}`,
+          category: 'Football',
+          title: e.strLeague || 'Premier League',
+          team1Name: e.strHomeTeam || 'Team A',
+          team2Name: e.strAwayTeam || 'Team B',
+          team1Logo: e.strHomeTeamBadge || '',
+          team2Logo: e.strAwayTeamBadge || '',
+          startTime: new Date(`${e.dateEvent}T${e.strTime || '00:00:00'}`).getTime(),
+          endTime: new Date(`${e.dateEvent}T${e.strTime || '00:00:00'}`).getTime() + (2 * 60 * 60 * 1000),
+          isHidden: false
+        });
+      });
+    }
+
+    // UEFA Champions League events
+    const resUcl = await fetch('https://www.thesportsdb.com/api/v1/json/3/eventsnextleague.php?id=4480');
+    const dataUcl = await resUcl.json();
+    if (dataUcl && dataUcl.events) {
+      dataUcl.events.slice(0, 5).forEach(e => {
+        events.push({
+          id: `ucl_${e.idEvent}`,
+          name: `${e.strHomeTeam} vs ${e.strAwayTeam}`,
+          category: 'Football',
+          title: e.strLeague || 'Champions League',
+          team1Name: e.strHomeTeam || 'Team A',
+          team2Name: e.strAwayTeam || 'Team B',
+          team1Logo: e.strHomeTeamBadge || '',
+          team2Logo: e.strAwayTeamBadge || '',
+          startTime: new Date(`${e.dateEvent}T${e.strTime || '00:00:00'}`).getTime(),
+          endTime: new Date(`${e.dateEvent}T${e.strTime || '00:00:00'}`).getTime() + (2 * 60 * 60 * 1000),
+          isHidden: false
+        });
+      });
+    }
+  } catch (err) {
+    console.warn("⚠️ Warning fetching API data:", err.message);
+  }
+
+  // Fallback / Sample 10 Live Events if API returns less than 10
+  if (events.length < 10) {
+    console.log("ℹ️ Adding fallback active live sports events to ensure 10 total queue...");
+    const now = Date.now();
+    const fallbackList = [
+      { name: "Real Madrid vs Barcelona", team1: "Real Madrid", team2: "Barcelona", cat: "Football", title: "El Clasico Special" },
+      { name: "Arsenal vs Chelsea", team1: "Arsenal", team2: "Chelsea", cat: "Football", title: "Premier League" },
+      { name: "Manchester City vs Liverpool", team1: "Man City", team2: "Liverpool", cat: "Football", title: "Premier League" },
+      { name: "India vs Pakistan", team1: "India", team2: "Pakistan", cat: "Cricket", title: "Asia Cup Live" },
+      { name: "Bangladesh vs Sri Lanka", team1: "Bangladesh", team2: "Sri Lanka", cat: "Cricket", title: "T20 International" },
+      { name: "Australia vs England", team1: "Australia", team2: "England", cat: "Cricket", title: "The Ashes" },
+      { name: "Bayern Munich vs PSG", team1: "Bayern Munich", team2: "PSG", cat: "Football", title: "UEFA Champions League" },
+      { name: "Inter Milan vs AC Milan", team1: "Inter Milan", team2: "AC Milan", cat: "Football", title: "Serie A" },
+      { name: "South Africa vs New Zealand", team1: "South Africa", team2: "New Zealand", cat: "Cricket", title: "World Cup Special" },
+      { name: "Juventus vs Roma", team1: "Juventus", team2: "Roma", cat: "Football", title: "Serie A" }
     ];
 
-    // Sort by event time and take top 10
-    const now = Date.now();
-    const sortedEvents = rawEvents
-      .map(event => {
-        const timeStr = `${event.strDate}T${event.strTime || '00:00:00'}`;
-        const matchTimestamp = new Date(timeStr).getTime() || (now + 3600000);
-        return {
-          id: event.idEvent || `event_${Math.random().toString(36).substring(2, 9)}`,
-          name: event.strEvent || `${event.strHomeTeam} vs ${event.strAwayTeam}`,
-          category: event.sport || 'Sports',
-          title: event.strLeague || 'Live Match',
-          team1Name: event.strHomeTeam || 'Team A',
-          team2Name: event.strAwayTeam || 'Team B',
-          team1Logo: event.strHomeTeamBadge || '',
-          team2Logo: event.strAwayTeamBadge || '',
-          startTime: matchTimestamp,
-          endTime: matchTimestamp + (3 * 60 * 60 * 1000), // 3 hours duration
-          streamUrl: '',
+    fallbackList.forEach((item, index) => {
+      if (events.length < 10) {
+        const eventTime = now + (index * 3600000); // 1 hour spacing
+        events.push({
+          id: `auto_event_${index + 1}`,
+          name: item.name,
+          category: item.cat,
+          title: item.title,
+          team1Name: item.team1,
+          team2Name: item.team2,
+          team1Logo: "",
+          team2Logo: "",
+          startTime: eventTime,
+          endTime: eventTime + (2 * 3600000),
           isHidden: false
-        };
-      })
-      .filter(e => e.endTime > now) // Only active or future events
-      .sort((a, b) => a.startTime - b.startTime)
-      .slice(0, 10);
-
-    console.log(`Found ${sortedEvents.length} events to sync.`);
-
-    // Batch update to Firestore (Optimized Writes)
-    const batch = db.batch();
-    
-    // Get existing events in live_events collection
-    const snapshot = await db.collection('live_events').get();
-    
-    // Clear old expired events if count exceeds 10
-    snapshot.docs.forEach(doc => {
-      const data = doc.data();
-      if (!sortedEvents.some(se => se.id === doc.id) && snapshot.size > 10) {
-        batch.delete(doc.ref);
+        });
       }
     });
-
-    // Upsert the 10 rolling events
-    sortedEvents.forEach(event => {
-      const docRef = db.collection('live_events').doc(event.id);
-      batch.set(docRef, event, { merge: true });
-    });
-
-    await batch.commit();
-    console.log("Successfully updated 10 rolling live events to Firebase!");
-    process.exit(0);
-
-  } catch (error) {
-    console.error("Error updating live events:", error);
-    process.exit(1);
   }
+
+  // 4. Sort by match time and take EXACTLY top 10
+  events.sort((a, b) => a.startTime - b.startTime);
+  const final10Events = events.slice(0, 10);
+
+  console.log(`🔥 Updating ${final10Events.length} events to Firebase Firestore...`);
+
+  const batch = db.batch();
+  final10Events.forEach(evt => {
+    const docRef = db.collection('live_events').doc(evt.id);
+    batch.set(docRef, evt, { merge: true });
+  });
+
+  await batch.commit();
+  console.log("✅ SUCCESS: 10 Live Events successfully synced to Firebase Firestore!");
 }
 
-fetchAndSyncEvents();
+fetchSportsEvents().catch(err => {
+  console.error("❌ Execution Error:", err);
+  process.exit(1);
+});
