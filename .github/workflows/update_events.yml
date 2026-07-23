@@ -1,16 +1,15 @@
-name: Auto Update Live Events
+name: Sports Events Auto Updater
 
 on:
   schedule:
-    # Runs automatically every 1 hour
-    - cron: '0 * * * *'
-  workflow_dispatch:
+    - cron: '0 * * * *'  # Runs automatically every 1 hour
+  workflow_dispatch:      # Allows manual trigger button in GitHub
 
 jobs:
   update-events:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -19,9 +18,9 @@ jobs:
           node-version: '20'
 
       - name: Install Dependencies
-        run: npm install firebase-admin
+        run: npm install
 
-      - name: Run Auto Update Script
+      - name: Run Auto Sports Script
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node update.js
+        run: node index.js
