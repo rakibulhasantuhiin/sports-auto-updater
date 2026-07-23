@@ -1,7 +1,7 @@
 {
   "name": "sports-auto-updater",
   "version": "1.0.0",
-  "description": "Auto update live sports events to Firebase",
+  "description": "Auto updates live sports events to Firebase Firestore",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
