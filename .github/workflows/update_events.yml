@@ -2,25 +2,25 @@ name: Auto Update Live Events
 
 on:
   schedule:
-    - cron: '0 * * * *' # Runs every 1 hour automatically
-  workflow_dispatch: # Allows manual trigger button in GitHub
+    - cron: '0 * * * *' # প্রতি ১ ঘণ্টা পর পর স্বয়ংক্রিয়ভাবে চলবে
+  workflow_dispatch: # ম্যানুয়ালি রান করার জন্য
 
 jobs:
   update-events:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/node-version@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install Dependencies
         run: npm install firebase-admin axios
 
-      - name: Run Auto Update Script
+      - name: Run Update Script
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node scripts/update_events.js
+        run: node update.js
