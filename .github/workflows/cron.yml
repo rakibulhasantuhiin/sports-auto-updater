@@ -1,0 +1,27 @@
+name: Sports Events Auto Updater
+
+on:
+  schedule:
+    # Runs every 1 hour automatically
+    - cron: '0 * * * *'
+  workflow_dispatch: # Allows manual trigger anytime
+
+jobs:
+  update-events:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-js-version: '18'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Auto Sports Script
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node index.js
