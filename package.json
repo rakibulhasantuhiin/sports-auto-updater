@@ -1,7 +1,7 @@
 {
   "name": "sports-auto-updater",
   "version": "1.0.0",
-  "description": "Auto updates cricket and football matches in Firebase Firestore",
+  "description": "Sports events auto-updater",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
