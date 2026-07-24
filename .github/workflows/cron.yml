@@ -2,28 +2,27 @@ name: Sports Events Auto Updater
 
 on:
   schedule:
-    # এটি প্রতিদিন প্রতি ৬ ঘণ্টা পর পর অটোমেটিক স্ক্রিপ্টটি রান করবে
+    # Runs automatically every 6 hours
     - cron: '0 */6 * * *'
-  workflow_dispatch: # এর মাধ্যমে আপনি চাইলে যেকোনো সময় ম্যানুয়ালি রান করতে পারবেন
+  workflow_dispatch: # Allows manual trigger anytime from GitHub Actions tab
 
 jobs:
   update-events:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '20'
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
 
-    - name: Install Dependencies
-      run: npm install axios cheerio firebase-admin
+      - name: Install Dependencies
+        run: npm install axios cheerio firebase-admin
 
-    - name: Run Updater Script
-      env:
-        # আপনার GitHub Settings -> Secrets -> Actions এ এই ভ্যারিয়েবলটি সেট করতে হবে
-        FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-      run: node index.js
+      - name: Run Updater Script
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node index.js
