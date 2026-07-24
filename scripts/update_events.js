@@ -1,13 +1,12 @@
 /**
- * Tuhinext TV app-এর জন্য ক্রিকেট এবং ফুটবলের রিয়েল-টাইম স্ক্রিপ্ট।
- * এটি ESPN Cricinfo API এবং Sky Sports থেকে ডাটা নিয়ে সরাসরি Firebase Firestore-এ আপলোড করে।
+ * Sports Auto Updater Scraper for Cricket and Football
  */
 
 const axios = require('axios');
 const cheerio = require('cheerio');
 const admin = require('firebase-admin');
 
-// Firebase Admin SDK ইনিশিয়াল করা
+// ১. Firebase Admin SDK ইনিশিয়ালাইজ করা
 let db;
 try {
     const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -19,13 +18,13 @@ try {
         credential: admin.credential.cert(JSON.parse(serviceAccountJson))
     });
     db = admin.firestore();
-    console.log("✅ Firebase Admin initialized successfully!");
+    console.log("✅ Firebase Admin successfully initialized!");
 } catch (error) {
     console.error("❌ Failed to initialize Firebase:", error.message);
     process.exit(1);
 }
 
-// ইউনিক ডক আইডি জেনারেট করার জন্য হ্যাশ ফাংশন
+// ইউনিক আইডি বানানোর জন্য হ্যাশ ফাংশন
 function hashString(str) {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -40,13 +39,13 @@ function cleanString(str) {
     return str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
 }
 
-// Sky Sports-এর টাইম জোন এবং ফরম্যাট অনুযায়ী টাইমস্ট্যাম্প বের করা
+// Sky Sports ডেট-টাইম পার্স করার ফাংশন
 function parseSkySportsDateTime(dateStr, timeStr) {
     try {
         let cleanDate = dateStr.replace(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+/, '');
-        cleanDate = cleanDate.replace(/(\d+)(st|nd|rd|th)/, '$1'); // "24th" -> "24"
+        cleanDate = cleanDate.replace(/(\d+)(st|nd|rd|th)/, '$1');
         
-        const combined = `${cleanDate} ${timeStr || '12:00'} GMT`; // UK time (GMT)
+        const combined = `${cleanDate} ${timeStr || '12:00'} GMT`;
         const parsed = Date.parse(combined);
         if (!isNaN(parsed)) {
             return parsed;
@@ -57,36 +56,64 @@ function parseSkySportsDateTime(dateStr, timeStr) {
     return Date.now() + 3600000;
 }
 
-// ১. ক্রিকেট ম্যাচ নিয়ে আসার ইঞ্জিন (ESPN Cricinfo API - ১০০% নির্ভরযোগ্য এবং কোনো API Key ছাড়াই চলে!)
+// ২. ক্রিকেট কালেকশন ইঞ্জিন (ESPN Cricinfo API - সম্পূর্ণ অটোমেটিক ও শক্তিশালী)
 async function fetchCricketEvents() {
-    console.log("⏳ ESPN Cricinfo থেকে ক্রিকেটের ম্যাচ ডাটা আনা হচ্ছে...");
+    console.log("⏳ Fetching cricket matches from ESPN Cricinfo...");
     const url = 'https://hs-consumer-api.espncricinfo.com/v1/pages/matches/current?lang=en';
     
     try {
         const response = await axios.get(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-            }
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Origin': 'https://www.espncricinfo.com',
+                'Referer': 'https://www.espncricinfo.com/'
+            },
+            timeout: 10000
         });
         
-        const matches = response.data.matches || [];
+        // Cricinfo এপিআই রেসপন্স দুইভাবে ডাটা দিতে পারে, তাই আমরা দুটি পথই চেক করে নিব যেন কখনো ডাটা মিস না হয়
+        let matches = [];
+        if (response.data) {
+            if (Array.isArray(response.data.matches)) {
+                matches = response.data.matches;
+            } else if (response.data.content && Array.isArray(response.data.content.matches)) {
+                matches = response.data.content.matches;
+            }
+        }
+        
+        console.log(`ℹ️ Found ${matches.length} total matches in raw Cricinfo API.`);
         const cricketEvents = [];
         
         matches.forEach(m => {
-            // শুধুমাত্র লাইভ অথবা আপকামিং ম্যাচগুলো নেওয়া হচ্ছে (রেজাল্ট হয়ে গেছে এমন ম্যাচ ফিল্টার করা হচ্ছে)
-            if (m.status === 'RESULT') return; 
+            // যদি ম্যাচের রেজাল্ট চলে আসে (অর্থাৎ খেলা শেষ), তাহলে স্কিপ করবে
+            if (m.status === 'RESULT') {
+                console.log(`   Skip completed: ${m.title || 'Match'} (${m.slug || 'no-slug'})`);
+                return; 
+            }
             
             const matchId = `cricket_${m.objectId}`;
-            const seriesName = m.series ? m.series.name : "Cricket Match";
+            const seriesName = m.series ? (m.series.name || m.series.shortName || "Cricket Series") : "Cricket Series";
             const title = m.title || "Match";
             
-            const startTime = new Date(m.startTime).getTime();
-            const endTime = m.endTime ? new Date(m.endTime).getTime() : startTime + 8 * 3600 * 1000; // ক্রিকেট ম্যাচ সাধারণ ৮ ঘণ্টার ধরা হয়েছে
+            const startTime = m.startTime ? new Date(m.startTime).getTime() : Date.now();
+            const endTime = m.endTime ? new Date(m.endTime).getTime() : startTime + 8 * 3600 * 1000; // Default 8 hours for cricket
             
-            const team1 = m.teams[0] ? m.teams[0].team : null;
-            const team2 = m.teams[1] ? m.teams[1].team : null;
+            const team1Obj = m.teams && m.teams[0] ? m.teams[0].team : null;
+            const team2Obj = m.teams && m.teams[1] ? m.teams[1].team : null;
             
-            if (!team1 || !team2) return;
+            if (!team1Obj || !team2Obj) {
+                console.log(`   Skip match due to missing teams: ${title}`);
+                return;
+            }
+            
+            const team1Name = team1Obj.name || team1Obj.longName || "Team 1";
+            const team1Logo = team1Obj.logo ? (team1Obj.logo.url || "") : "";
+            const team2Name = team2Obj.name || team2Obj.longName || "Team 2";
+            const team2Logo = team2Obj.logo ? (team2Obj.logo.url || "") : "";
+            
+            console.log(`   ➕ Adding Cricket Match: ${team1Name} vs ${team2Name} (${seriesName})`);
             
             cricketEvents.push({
                 id: hashString(matchId),
@@ -95,33 +122,34 @@ async function fetchCricketEvents() {
                 title: title,
                 startTime: startTime,
                 endTime: endTime,
-                team1Name: team1.name,
-                team1Logo: team1.logo ? team1.logo.url : "",
-                team2Name: team2.name,
-                team2Logo: team2.logo ? team2.logo.url : "",
+                team1Name: team1Name,
+                team1Logo: team1Logo,
+                team2Name: team2Name,
+                team2Logo: team2Logo,
                 orderIndex: 0,
                 isHidden: false
             });
         });
         
-        console.log(`✅ ${cricketEvents.length} টি ক্রিকেট ম্যাচ পাওয়া গেছে।`);
+        console.log(`✅ Successfully compiled ${cricketEvents.length} active/upcoming Cricket events.`);
         return cricketEvents;
     } catch (error) {
-        console.error("❌ ক্রিকেট ডাটা আনতে সমস্যা হয়েছে:", error.message);
+        console.error("❌ Error fetching Cricket events:", error.message);
         return [];
     }
 }
 
-// ২. ফুটবল ম্যাচ স্ক্র্যাপ করার ইঞ্জিন (Sky Sports Fixtures Scraper)
+// ৩. ফুটবল স্ক্র্যাপিং ইঞ্জিন (Sky Sports Football Fixtures)
 async function fetchFootballEvents() {
-    console.log("⏳ Sky Sports থেকে ফুটবল ম্যাচ স্ক্র্যাপ করা হচ্ছে...");
+    console.log("⏳ Scraping football matches from Sky Sports...");
     const url = 'https://www.skysports.com/football/fixtures';
     
     try {
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-            }
+            },
+            timeout: 10000
         });
         
         const $ = cheerio.load(response.data);
@@ -155,7 +183,7 @@ async function fetchFootballEvents() {
                         category: "football",
                         title: "Match",
                         startTime: startTime,
-                        endTime: startTime + 2 * 3600 * 1000, // ফুটবল ম্যাচ ২ ঘণ্টা সময় দেওয়া হয়েছে
+                        endTime: startTime + 2 * 3600 * 1000, // 2 Hours
                         team1Name: team1Name,
                         team1Logo: team1Logo,
                         team2Name: team2Name,
@@ -167,19 +195,19 @@ async function fetchFootballEvents() {
             }
         });
         
-        console.log(`✅ ${footballEvents.length} টি ফুটবল ম্যাচ স্ক্র্যাপ করা হয়েছে।`);
+        console.log(`✅ Successfully compiled ${footballEvents.length} Football events.`);
         return footballEvents;
     } catch (error) {
-        console.error("❌ ফুটবল ডাটা স্ক্র্যাপ করতে সমস্যা হয়েছে:", error.message);
+        console.error("❌ Error scraping Football events:", error.message);
         return [];
     }
 }
 
-// ৩. সিঙ্ক কন্ট্রোলার
+// ৪. মেইন কন্ট্রোলার (ডাটা ফায়ারবেসে সিঙ্ক করার জন্য)
 async function syncAllEvents() {
-    console.log("🚀 স্পোর্টস ইভেন্ট সিঙ্ক করার প্রক্রিয়া শুরু হচ্ছে...");
+    console.log("🚀 Starting Sports Events Sync...");
     
-    // ক্রিকেট এবং ফুটবল দুটোই একসাথে আনা হচ্ছে
+    // ক্রিকেট এবং ফুটবল দুইটাই একসাথে রান হবে
     const [cricketEvents, footballEvents] = await Promise.all([
         fetchCricketEvents(),
         fetchFootballEvents()
@@ -188,11 +216,11 @@ async function syncAllEvents() {
     const allEvents = [...cricketEvents, ...footballEvents];
     
     if (allEvents.length === 0) {
-        console.log("⚠️ কোনো লাইভ বা আপকামিং ম্যাচ পাওয়া যায়নি।");
+        console.log("⚠️ No active or upcoming events to sync.");
         return;
     }
     
-    console.log(`⏳ মোট ${allEvents.length} টি ম্যাচ Firestore-এ আপলোড করা হচ্ছে...`);
+    console.log(`⏳ Uploading ${allEvents.length} total events to Firestore...`);
     
     try {
         const batch = db.batch();
@@ -204,9 +232,9 @@ async function syncAllEvents() {
         });
         
         await batch.commit();
-        console.log("🎉 চমৎকার! ক্রিকেট এবং ফুটবল উভয় ম্যাচের ডাটা Firestore-এ আপলোড সম্পন্ন হয়েছে!");
+        console.log("🎉 SUCCESS! Firestore successfully updated with Cricket & Football matches!");
     } catch (error) {
-        console.error("❌ Firestore আপডেট করতে সমস্যা হয়েছে:", error.message);
+        console.error("❌ Failed to update Firestore batch:", error.message);
     }
 }
 
