@@ -1,5 +1,14 @@
-"dependencies": {
-   "axios": "^1.4.0",
-   "cheerio": "^1.0.0-rc.12",
-   "firebase-admin": "^11.8.0"
+{
+  "name": "sports-auto-updater",
+  "version": "1.0.0",
+  "description": "Auto updates cricket and football matches in Firebase Firestore",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.4.0",
+    "cheerio": "^1.0.0-rc.12",
+    "firebase-admin": "^11.8.0"
+  }
 }
