@@ -1,27 +1,27 @@
-name: Auto Update Sports Schedule
+name: Auto Update Sports Events
 
 on:
   schedule:
-    # প্রতি ৩ ঘণ্টা পর পর রান হবে (limitation এড়াতে সেরা সময়)
-    - cron: '0 */3 * * *'
-  workflow_dispatch: # চাইলে গিটহাব থেকে ম্যানুয়ালিও রান করা যাবে
+    # প্রতি ৪ ঘণ্টা পরপর চলবে (দিনে ৬ বার) - এতে লিমিট কখনোই শেষ হবে না!
+    - cron: '0 */4 * * *'
+  workflow_dispatch: # ম্যানুয়ালি বোতাম চেপে চালানোর জন্য
 
 jobs:
   update-events:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: '18'
 
       - name: Install Dependencies
         run: npm install
 
-      - name: Run Auto Updater Script
+      - name: Run Updater Script
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node index.js
+        run: node index.js # অথবা আপনার স্ক্রিপ্টের নাম যদি scripts/update_events.js হয়, তবে node scripts/update_events.js দিবেন
