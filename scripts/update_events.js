@@ -1,294 +1,144 @@
-/**
- * 🚀 TUHINEXT TV - SPORTS AUTOMATIC UPDATER SCRIPT (V2)
- * 
- * This is a highly robust, professional-grade Node.js scraper script designed to run 
- * in your GitHub Actions Repository (sports-auto-updater) to fetch both CRICKET and FOOTBALL 
- * matches, format them into the exact schema of Tuhinext TV, and sync them directly to Firestore!
- * 
- * 🛠️ IMPROVEMENTS IN V2:
- * 1. Cricinfo RSS Feed Parser (Unblockable & bypasses 403 Cloudflare blocks)
- * 2. New Sky Sports Football Scraper (Compatible with their new responsive UI layout)
- * 3. Perfect Date-Time parsers preventing "1970" bugs.
- * 
- * 📋 HOW TO USE:
- * - Copy this entire code and paste it into:
- *   1. 'index.js' (inside your sports-auto-updater repo)
- *   2. 'scripts/update_events.js' (inside your sports-auto-updater repo)
- * - Make sure 'FIREBASE_SERVICE_ACCOUNT' is set up in your GitHub Secrets.
- */
-
-const axios = require('axios');
-const cheerio = require('cheerio');
 const admin = require('firebase-admin');
+const axios = require('axios');
 
-// 1. Initialize Firebase Admin SDK
-let db;
+// ১. ফায়ারবেস অ্যাডমিন ইনিশিয়ালাইজেশন
 try {
-    const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
-    if (!serviceAccountJson) {
-        throw new Error("Missing FIREBASE_SERVICE_ACCOUNT environment variable inside GitHub Secrets!");
-    }
-    
-    admin.initializeApp({
-        credential: admin.credential.cert(JSON.parse(serviceAccountJson))
-    });
-    db = admin.firestore();
-    console.log("✅ Firebase Admin initialized successfully!");
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
 } catch (error) {
-    console.error("❌ Failed to initialize Firebase:", error.message);
-    process.exit(1);
+  console.error("❌ Firebase Service Account Error! Ensure FIREBASE_SERVICE_ACCOUNT is set in GitHub Secrets.");
+  process.exit(1);
 }
 
-// Hash helper for clean, consistent document IDs
-function hashString(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = (hash << 5) - hash + char;
-        hash = hash & hash;
-    }
-    return Math.abs(hash).toString();
+const db = admin.firestore();
+
+// ২. গুরুত্বপূর্ণ ও হাইপ থাকা দল বা টুর্নামেন্টের কিওয়ার্ড (শুধুমাত্র এগুলোই অ্যাড হবে)
+const NOTABLE_KEYWORDS = [
+  // Cricket Hype
+  "ipl", "bpl", "psl", "t20", "world cup", "asia cup", "champions trophy", "odi", "test",
+  "bangladesh", "india", "pakistan", "australia", "england", "south africa", "new zealand", "sri lanka", "west indies", "afghanistan",
+  "ban", "ind", "pak", "aus", "eng", "sa", "nz", "sl", "wi", "afg",
+  // Football Hype
+  "real madrid", "barcelona", "manchester", "united", "city", "liverpool", "chelsea", "arsenal", "tottenham",
+  "bayern", "dortmund", "psg", "paris", "juventus", "milan", "inter", "atletico",
+  "al nassr", "al hilal", "inter miami", "argentina", "brazil", "portugal", "france", "spain", "germany",
+  "champions league", "ucl", "premier league", "la liga", "serie a", "bundesliga", "copa america", "euro"
+];
+
+function isNotableEvent(title, t1, t2, tournament) {
+  const text = `${title} ${t1} ${t2} ${tournament}`.toLowerCase();
+  return NOTABLE_KEYWORDS.some(kw => text.includes(kw));
 }
 
-// Text sanitizer
-function cleanString(str) {
-    return str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
-}
+// ৩. ESPN ফ্রি পাবলিক API থেকে খেলা সংগ্রহ করা
+async function fetchSportsEvents() {
+  const events = [];
+  const now = Date.now();
 
-// Standard military time parser (e.g., "8.00pm" or "12.30am" -> "20:00:00")
-function parseTime(timeStr) {
-    let clean = timeStr.trim().toLowerCase();
-    const isPm = clean.includes('pm');
-    const isAm = clean.includes('am');
-    clean = clean.replace(/(am|pm)/g, '').trim();
-    
-    let hours = 12;
-    let minutes = 0;
-    
-    if (clean.includes('.')) {
-        const parts = clean.split('.');
-        hours = parseInt(parts[0], 10);
-        minutes = parseInt(parts[1], 10);
-    } else if (clean.includes(':')) {
-        const parts = clean.split(':');
-        hours = parseInt(parts[0], 10);
-        minutes = parseInt(parts[1], 10);
-    } else {
-        hours = parseInt(clean, 10);
-    }
-    
-    if (isPm && hours < 12) hours += 12;
-    if (isAm && hours === 12) hours = 0;
-    
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:00`;
-}
+  // API Endpoints (ESPN Public JSON APIs)
+  const endpoints = [
+    { url: "https://site.api.espn.com/apis/site/v2/sports/cricket/8039/scoreboard", category: "Cricket" },
+    { url: "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard", category: "Football" }
+  ];
 
-// Convert Sky Sports Date (e.g. "Friday 24th July") and Time (e.g. "8.00pm") to GMT Epoch
-function parseSkySportsDateTime(dateStr, timeStr) {
+  for (const ep of endpoints) {
     try {
-        let cleanDate = dateStr.replace(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+/, '');
-        cleanDate = cleanDate.replace(/(\d+)(st|nd|rd|th)/, '$1'); 
-        
-        const formattedTime = parseTime(timeStr);
-        const year = new Date().getFullYear();
-        const combined = `${cleanDate} ${year} ${formattedTime} GMT`; 
-        
-        const parsed = Date.parse(combined);
-        if (!isNaN(parsed)) {
-            return parsed;
+      console.log(`📡 Fetching ${ep.category} events...`);
+      const res = await axios.get(ep.url);
+      const data = res.data;
+
+      if (data && data.events) {
+        for (const ev of data.events) {
+          const comp = ev.competitions ? ev.competitions[0] : null;
+          if (!comp) continue;
+
+          // সঠিক UTC টাইমস্ট্যাম্প (যা অ্যাপে স্বয়ংক্রিয়ভাবে বাংলাদেশ সময় হয়ে যাবে)
+          const startTime = new Date(ev.date).getTime();
+          if (isNaN(startTime)) continue;
+
+          // খেলা শেষ হওয়ার সময় (ডিফল্ট ৪ ঘণ্টা পর)
+          const endTime = startTime + (4 * 60 * 60 * 1000);
+
+          // পুরনো বা শেষ হয়ে যাওয়া ম্যাচ বাদ দেওয়া
+          if (now > endTime) continue;
+
+          const competitors = comp.competitors || [];
+          const t1 = competitors[0] || {};
+          const t2 = competitors[1] || {};
+
+          const team1Name = t1.team?.displayName || t1.team?.name || "Team 1";
+          const team1Logo = t1.team?.logo || "";
+          const team2Name = t2.team?.displayName || t2.team?.name || "Team 2";
+          const team2Logo = t2.team?.logo || "";
+
+          const tournamentName = ev.season?.displayName || ev.name || ep.category;
+          const matchTitle = ev.shortName || `${team1Name} vs ${team2Name}`;
+
+          // শুধুমাত্র উল্লেখযোগ্য (High Hype) ম্যাচ ফিল্টার করা
+          if (!isNotableEvent(matchTitle, team1Name, team2Name, tournamentName)) {
+            console.log(`⏭️ Skipping non-hype match: ${team1Name} vs ${team2Name}`);
+            continue;
+          }
+
+          // ইউনিক ID তৈরি
+          const id = `auto_${ep.category.toLowerCase()}_${ev.id}`;
+
+          events.push({
+            id: id,
+            name: `${team1Name} vs ${team2Name}`,
+            category: ep.category,
+            title: tournamentName,
+            startTime: startTime,
+            endTime: endTime,
+            team1Name: team1Name,
+            team1Logo: team1Logo,
+            team2Name: team2Name,
+            team2Logo: team2Logo,
+            orderIndex: startTime, // সময়ের ক্রমানুসারে সাজানো
+            isHidden: false
+          });
         }
-    } catch (e) {
-        console.error("Error parsing date-time:", dateStr, timeStr, e.message);
+      }
+    } catch (err) {
+      console.error(`⚠️ Error fetching ${ep.category}:`, err.message);
     }
-    return Date.now() + 3600000;
+  }
+
+  return events;
 }
 
-// 2. CRICKET FETCHING ENGINE (Cricinfo RSS Live Feed - Cloud-safe and unblocked!)
-async function fetchCricketEvents() {
-    console.log("⏳ Fetching live Cricket matches from ESPN Cricinfo RSS feed...");
-    const url = 'https://static.espncricinfo.com/rss/livescores.xml';
-    
-    try {
-        const response = await axios.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            },
-            timeout: 10000
-        });
-        
-        const $ = cheerio.load(response.data, { xmlMode: true });
-        const cricketEvents = [];
-        
-        $('item').each((i, el) => {
-            const titleText = $(el).find('title').text().trim();
-            const linkText = $(el).find('link').text().trim();
-            const guidText = $(el).find('guid').text().trim();
-            
-            // Extract unique match ID from URL
-            let matchId = '';
-            const matchMatch = (linkText || guidText).match(/match\/(\d+)\.html/);
-            if (matchMatch && matchMatch[1]) {
-                matchId = matchMatch[1];
-            } else {
-                matchId = Math.random().toString(36).substring(7);
-            }
-            
-            let team1 = "Team 1";
-            let team2 = "Team 2";
-            if (titleText.includes(' v ')) {
-                const parts = titleText.split(' v ');
-                team1 = parts[0].trim();
-                team2 = parts[1].trim();
-            } else if (titleText.includes(' vs ')) {
-                const parts = titleText.split(' vs ');
-                team1 = parts[0].trim();
-                team2 = parts[1].trim();
-            } else {
-                team1 = titleText;
-            }
-            
-            // Clean score indicators
-            team1 = team1.replace(/\([^)]*\)/g, '').trim();
-            team2 = team2.replace(/\([^)]*\)/g, '').trim();
-            
-            // Generate clean hashed event ID
-            const eventId = hashString(`cricket_${matchId}`);
-            
-            // Nice cricket logo
-            const team1Logo = `https://cdn-icons-png.flaticon.com/512/3076/3076840.png`;
-            const team2Logo = `https://cdn-icons-png.flaticon.com/512/3076/3076840.png`;
-            
-            cricketEvents.push({
-                id: eventId,
-                name: "International Cricket",
-                category: "cricket",
-                title: titleText,
-                startTime: Date.now(),
-                endTime: Date.now() + 8 * 3600 * 1000,
-                team1Name: team1,
-                team1Logo: team1Logo,
-                team2Name: team2,
-                team2Logo: team2Logo,
-                orderIndex: 0,
-                isHidden: false
-            });
-            
-            console.log(`   🏏 Added Cricket Match: ${team1} vs ${team2}`);
-        });
-        
-        console.log(`✅ Successfully loaded ${cricketEvents.length} Cricket events.`);
-        return cricketEvents;
-    } catch (error) {
-        console.error("❌ Error fetching Cricket events:", error.message);
-        return [];
+// ৪. ফায়ারবেস ডেটাবেস আপডেট করা
+async function updateDatabase() {
+  console.log("🚀 Starting Auto Sports Update...");
+  const newEvents = await fetchSportsEvents();
+  console.log(`🎯 Found ${newEvents.length} notable high-hype events!`);
+
+  const batch = db.batch();
+  const eventsRef = db.collection("live_events");
+
+  // পুরনো ও মেয়াদোত্তীর্ণ অটো-ইভেন্টগুলো ডিলিট করা
+  const snapshot = await eventsRef.get();
+  const now = Date.now();
+
+  snapshot.forEach(doc => {
+    const data = doc.data();
+    // যদি অটো-অ্যাড করা ইভেন্ট হয় এবং সময় শেষ হয়ে যায়, তবে রিমুভ করবে
+    if (doc.id.startsWith("auto_") && (data.endTime < now || data.startTime < now - 6*3600*1000)) {
+      batch.delete(doc.ref);
     }
+  });
+
+  // নতুন ইভেন্টগুলো যুক্ত করা (Upsert)
+  newEvents.forEach(ev => {
+    const docRef = eventsRef.document(ev.id);
+    batch.set(docRef, ev, { merge: true });
+  });
+
+  await batch.commit();
+  console.log("✅ Successfully updated live_events in Firebase!");
+  process.exit(0);
 }
 
-// 3. FOOTBALL FETCHING ENGINE (New Sky Sports Scraper)
-async function fetchFootballEvents() {
-    console.log("⏳ Scraping Football matches from Sky Sports Fixtures...");
-    const url = 'https://www.skysports.com/football/fixtures';
-    
-    try {
-        const response = await axios.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            },
-            timeout: 10000
-        });
-        
-        const $ = cheerio.load(response.data);
-        const footballEvents = [];
-        
-        let currentDateStr = '';
-        
-        $('main.main').children().each((i, el) => {
-            const $el = $(el);
-            
-            if ($el.hasClass('ui-sitewide-component-header__wrapper--h3')) {
-                currentDateStr = $el.find('.ui-sitewide-component-header__body').text().trim();
-            } else if ($el.hasClass('ui-tournament-matches')) {
-                const currentCompetition = $el.find('.ui-tournament-matches__tournament-name').text().trim() || 'Football Match';
-                
-                $el.find('.ui-tournament-matches__match-item').each((j, matchItem) => {
-                    const $matchItem = $(matchItem);
-                    const team1Name = $matchItem.find('.ui-sport-match-score__team[data-team-id="home"] .ui-sport-match-score__team-name').text().trim();
-                    const team2Name = $matchItem.find('.ui-sport-match-score__team[data-team-id="away"] .ui-sport-match-score__team-name').text().trim();
-                    
-                    let team1Logo = $matchItem.find('.ui-sport-match-score__team[data-team-id="home"] img.ui-sport-match-score__team-badge').attr('src') || '';
-                    let team2Logo = $matchItem.find('.ui-sport-match-score__team[data-team-id="away"] img.ui-sport-match-score__team-badge').attr('src') || '';
-                    
-                    const timeText = $matchItem.find('.ui-sport-match-score__start-time').text().trim();
-                    
-                    if (team1Name && team2Name && currentDateStr) {
-                        const startTime = parseSkySportsDateTime(currentDateStr, timeText);
-                        
-                        // Only add future or active matches
-                        if (startTime >= Date.now() - 3 * 3600 * 1000) {
-                            const eventIdStr = `football_${cleanString(team1Name)}_${cleanString(team2Name)}_${startTime}`;
-                            
-                            footballEvents.push({
-                                id: hashString(eventIdStr),
-                                name: currentCompetition,
-                                category: "football",
-                                title: "Football Match",
-                                startTime: startTime,
-                                endTime: startTime + 2 * 3600 * 1000,
-                                team1Name: team1Name,
-                                team1Logo: team1Logo,
-                                team2Name: team2Name,
-                                team2Logo: team2Logo,
-                                orderIndex: 0,
-                                isHidden: false
-                            });
-                            
-                            console.log(`   ⚽ Added Football Match: ${team1Name} vs ${team2Name} (${currentCompetition})`);
-                        }
-                    }
-                });
-            }
-        });
-        
-        console.log(`✅ Successfully scraped ${footballEvents.length} Football events.`);
-        return footballEvents;
-    } catch (error) {
-        console.error("❌ Error scraping Football events:", error.message);
-        return [];
-    }
-}
-
-// 4. MAIN SYNC CONTROLLER
-async function syncAllEvents() {
-    console.log("🚀 Starting Sports Events Synchronization...");
-    
-    const [cricketEvents, footballEvents] = await Promise.all([
-        fetchCricketEvents(),
-        fetchFootballEvents()
-    ]);
-    
-    const allEvents = [...cricketEvents, ...footballEvents];
-    
-    if (allEvents.length === 0) {
-        console.log("⚠️ No active or upcoming events found to sync.");
-        return;
-    }
-    
-    console.log(`⏳ Synchronizing ${allEvents.length} total events to Firestore 'live_events' collection...`);
-    
-    try {
-        const batch = db.batch();
-        const collectionRef = db.collection('live_events');
-        
-        allEvents.forEach(event => {
-            const docRef = collectionRef.doc(event.id);
-            batch.set(docRef, event, { merge: true });
-        });
-        
-        await batch.commit();
-        console.log("🎉 SUCCESS! Tuhinext TV Live Events synchronized beautifully!");
-    } catch (error) {
-        console.error("❌ Failed to update Firestore batch:", error.message);
-    }
-}
-
-syncAllEvents();
+updateDatabase();
