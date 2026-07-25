@@ -1,144 +1,119 @@
 const admin = require('firebase-admin');
 const axios = require('axios');
 
-// ১. ফায়ারবেস অ্যাডমিন ইনিশিয়ালাইজেশন
-try {
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-} catch (error) {
-  console.error("❌ Firebase Service Account Error! Ensure FIREBASE_SERVICE_ACCOUNT is set in GitHub Secrets.");
-  process.exit(1);
+// ১. ফায়ারবেস ইনিশিয়ালাইজেশন
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+if (!admin.apps.length) {
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
 }
-
 const db = admin.firestore();
 
-// ২. গুরুত্বপূর্ণ ও হাইপ থাকা দল বা টুর্নামেন্টের কিওয়ার্ড (শুধুমাত্র এগুলোই অ্যাড হবে)
-const NOTABLE_KEYWORDS = [
-  // Cricket Hype
-  "ipl", "bpl", "psl", "t20", "world cup", "asia cup", "champions trophy", "odi", "test",
-  "bangladesh", "india", "pakistan", "australia", "england", "south africa", "new zealand", "sri lanka", "west indies", "afghanistan",
-  "ban", "ind", "pak", "aus", "eng", "sa", "nz", "sl", "wi", "afg",
-  // Football Hype
-  "real madrid", "barcelona", "manchester", "united", "city", "liverpool", "chelsea", "arsenal", "tottenham",
-  "bayern", "dortmund", "psg", "paris", "juventus", "milan", "inter", "atletico",
-  "al nassr", "al hilal", "inter miami", "argentina", "brazil", "portugal", "france", "spain", "germany",
-  "champions league", "ucl", "premier league", "la liga", "serie a", "bundesliga", "copa america", "euro"
+// উল্লেখযোগ্য ক্রিকেট ও ফুটবল টিমের কিওয়ার্ড (হাইপ ফিল্টার)
+const IMPORTANT_KEYWORDS = [
+    // ক্রিকেট
+    'ipl', 'bpl', 'psl', 't20', 'world cup', 'asia cup', 'odi', 'icc',
+    'india', 'bangladesh', 'pakistan', 'australia', 'england', 'south africa',
+    'new zealand', 'sri lanka', 'west indies', 'afghanistan', 'ind', 'ban', 'pak', 'aus', 'eng',
+    // ফুটবল
+    'real madrid', 'barcelona', 'manchester', 'united', 'city', 'liverpool',
+    'chelsea', 'arsenal', 'tottenham', 'psg', 'bayern', 'dortmund', 'juventus',
+    'milan', 'inter', 'atletico', 'al nassr', 'al hilal', 'miami', 'champions league',
+    'ucl', 'premier league', 'la liga', 'serie a', 'bundesliga', 'copa america', 'world cup'
 ];
 
-function isNotableEvent(title, t1, t2, tournament) {
-  const text = `${title} ${t1} ${t2} ${tournament}`.toLowerCase();
-  return NOTABLE_KEYWORDS.some(kw => text.includes(kw));
+function isNotableEvent(title, category) {
+    const text = `${title} ${category}`.toLowerCase();
+    return IMPORTANT_KEYWORDS.some(kw => text.includes(kw));
 }
 
-// ৩. ESPN ফ্রি পাবলিক API থেকে খেলা সংগ্রহ করা
-async function fetchSportsEvents() {
-  const events = [];
-  const now = Date.now();
-
-  // API Endpoints (ESPN Public JSON APIs)
-  const endpoints = [
-    { url: "https://site.api.espn.com/apis/site/v2/sports/cricket/8039/scoreboard", category: "Cricket" },
-    { url: "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard", category: "Football" }
-  ];
-
-  for (const ep of endpoints) {
+async function updateLiveEvents() {
+    console.log("🔄 স্পোর্টস ইভেন্ট আপডেট শুরু হচ্ছে...");
+    
     try {
-      console.log(`📡 Fetching ${ep.category} events...`);
-      const res = await axios.get(ep.url);
-      const data = res.data;
+        // =========================================================================
+        // আপনার সোর্স থেকে ডাটা ফেচ করার কোড এখানে বসান (যেমন API বা Scraping)
+        // উদাহরণস্বরূপ আমরা ধরে নিচ্ছি fetchedEvents একটি অ্যারে:
+        // =========================================================================
+        const fetchedEvents = []; 
+        // উদাহরণ:
+        // const response = await axios.get('YOUR_API_URL');
+        // fetchedEvents = response.data.map(...);
 
-      if (data && data.events) {
-        for (const ev of data.events) {
-          const comp = ev.competitions ? ev.competitions[0] : null;
-          if (!comp) continue;
+        // শুধুমাত্র গুরুত্বপূর্ণ (হাইপ থাকা) খেলা ফিল্টার করা
+        const notableEvents = fetchedEvents.filter(event => 
+            isNotableEvent(event.title || event.name, event.category || '')
+        );
 
-          // সঠিক UTC টাইমস্ট্যাম্প (যা অ্যাপে স্বয়ংক্রিয়ভাবে বাংলাদেশ সময় হয়ে যাবে)
-          const startTime = new Date(ev.date).getTime();
-          if (isNaN(startTime)) continue;
+        console.log(`📊 মোট ইভেন্ট পাওয়া গেছে: ${fetchedEvents.length}, গুরুত্বপূর্ণ ইভেন্ট: ${notableEvents.length}`);
 
-          // খেলা শেষ হওয়ার সময় (ডিফল্ট ৪ ঘণ্টা পর)
-          const endTime = startTime + (4 * 60 * 60 * 1000);
+        // ২. ডাটাবেজ থেকে বর্তমান ইভেন্টগুলো পড়া (মাত্র ১ বার রিড হবে)
+        const eventsRef = db.collection('live_events');
+        const snapshot = await eventsRef.get();
+        const existingEventsMap = new Map();
+        snapshot.docs.forEach(doc => {
+            existingEventsMap.set(doc.id, { id: doc.id, ...doc.data() });
+        });
 
-          // পুরনো বা শেষ হয়ে যাওয়া ম্যাচ বাদ দেওয়া
-          if (now > endTime) continue;
+        const batch = db.batch();
+        let writeCount = 0;
+        let deleteCount = 0;
+        const now = Date.now();
 
-          const competitors = comp.competitors || [];
-          const t1 = competitors[0] || {};
-          const t2 = competitors[1] || {};
+        // ৩. নতুন বা পরিবর্তিত ইভেন্টগুলো চেক করে অ্যাড/আপডেট করা
+        const currentEventIds = new Set();
 
-          const team1Name = t1.team?.displayName || t1.team?.name || "Team 1";
-          const team1Logo = t1.team?.logo || "";
-          const team2Name = t2.team?.displayName || t2.team?.name || "Team 2";
-          const team2Logo = t2.team?.logo || "";
+        for (const event of notableEvents) {
+            // ইউনিক আইডি তৈরি (যেমন: ban_vs_ind_171000000)
+            const eventId = event.id || `${event.team1Name}_vs_${event.team2Name}`.toLowerCase().replace(/[^a-z0-9]/g, '_');
+            currentEventIds.add(eventId);
 
-          const tournamentName = ev.season?.displayName || ev.name || ep.category;
-          const matchTitle = ev.shortName || `${team1Name} vs ${team2Name}`;
+            const existing = existingEventsMap.get(eventId);
 
-          // শুধুমাত্র উল্লেখযোগ্য (High Hype) ম্যাচ ফিল্টার করা
-          if (!isNotableEvent(matchTitle, team1Name, team2Name, tournamentName)) {
-            console.log(`⏭️ Skipping non-hype match: ${team1Name} vs ${team2Name}`);
-            continue;
-          }
-
-          // ইউনিক ID তৈরি
-          const id = `auto_${ep.category.toLowerCase()}_${ev.id}`;
-
-          events.push({
-            id: id,
-            name: `${team1Name} vs ${team2Name}`,
-            category: ep.category,
-            title: tournamentName,
-            startTime: startTime,
-            endTime: endTime,
-            team1Name: team1Name,
-            team1Logo: team1Logo,
-            team2Name: team2Name,
-            team2Logo: team2Logo,
-            orderIndex: startTime, // সময়ের ক্রমানুসারে সাজানো
-            isHidden: false
-          });
+            // যদি ইভেন্টটি আগে না থাকে, অথবা সময় পরিবর্তন হয়ে থাকে, শুধু তখনই রাইট করা হবে!
+            if (!existing || existing.startTime !== event.startTime || existing.title !== event.title) {
+                const docRef = eventsRef.doc(eventId);
+                batch.set(docRef, {
+                    name: event.name || event.title,
+                    title: event.title || event.name,
+                    category: event.category || 'Sports',
+                    startTime: event.startTime, // সোর্স থেকে প্রাপ্ত একদম সঠিক টাইমস্ট্যাম্প (মিলিসেকেন্ড)
+                    endTime: event.endTime || (event.startTime + (4 * 3600 * 1000)), // ডিফল্ট ৪ ঘণ্টা
+                    team1Name: event.team1Name || '',
+                    team1Logo: event.team1Logo || '',
+                    team2Name: event.team2Name || '',
+                    team2Logo: event.team2Logo || '',
+                    isHidden: false,
+                    orderIndex: event.startTime // সময়ের ক্রমানুসারে সাজানোর জন্য
+                }, { merge: true });
+                writeCount++;
+            }
         }
-      }
-    } catch (err) {
-      console.error(`⚠️ Error fetching ${ep.category}:`, err.message);
-    }
-  }
 
-  return events;
+        // ৪. যেসব খেলা শেষ হয়ে গেছে (৬ ঘণ্টার বেশি আগে) সেগুলো ডাটাবেজ থেকে ডিলিট করা
+        existingEventsMap.forEach((value, key) => {
+            const isExpired = value.endTime ? (now > value.endTime + 3600000) : (now > value.startTime + (6 * 3600 * 1000));
+            const noLongerInSource = !currentEventIds.has(key) && (now > value.startTime + (4 * 3600 * 1000));
+
+            if (isExpired || noLongerInSource) {
+                batch.delete(eventsRef.doc(key));
+                deleteCount++;
+            }
+        });
+
+        // ৫. শুধুমাত্র পরিবর্তন থাকলেই ফায়ারবেসে ব্যাচ কমিট করা হবে
+        if (writeCount > 0 || deleteCount > 0) {
+            await batch.commit();
+            console.log(`✅ সফলভাবে আপডেট হয়েছে! নতুন/পরিবর্তিত রাইট: ${writeCount}টি, ডিলিট: ${deleteCount}টি।`);
+        } else {
+            console.log("⚡ কোনো নতুন পরিবর্তন নেই। ফায়ারবেস লিমিট ১০০% সেভ হয়েছে!");
+        }
+
+    } catch (error) {
+        console.error("❌ আপডেট করার সময় এরর হয়েছে:", error);
+        process.exit(1);
+    }
 }
 
-// ৪. ফায়ারবেস ডেটাবেস আপডেট করা
-async function updateDatabase() {
-  console.log("🚀 Starting Auto Sports Update...");
-  const newEvents = await fetchSportsEvents();
-  console.log(`🎯 Found ${newEvents.length} notable high-hype events!`);
-
-  const batch = db.batch();
-  const eventsRef = db.collection("live_events");
-
-  // পুরনো ও মেয়াদোত্তীর্ণ অটো-ইভেন্টগুলো ডিলিট করা
-  const snapshot = await eventsRef.get();
-  const now = Date.now();
-
-  snapshot.forEach(doc => {
-    const data = doc.data();
-    // যদি অটো-অ্যাড করা ইভেন্ট হয় এবং সময় শেষ হয়ে যায়, তবে রিমুভ করবে
-    if (doc.id.startsWith("auto_") && (data.endTime < now || data.startTime < now - 6*3600*1000)) {
-      batch.delete(doc.ref);
-    }
-  });
-
-  // নতুন ইভেন্টগুলো যুক্ত করা (Upsert)
-  newEvents.forEach(ev => {
-    const docRef = eventsRef.document(ev.id);
-    batch.set(docRef, ev, { merge: true });
-  });
-
-  await batch.commit();
-  console.log("✅ Successfully updated live_events in Firebase!");
-  process.exit(0);
-}
-
-updateDatabase();
+updateLiveEvents();
