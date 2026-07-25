@@ -2,7 +2,7 @@ name: Auto Update Sports Schedule
 
 on:
   schedule:
-    # প্রতি ৩ ঘণ্টা পর পর চলবে (UTC সময় অনুযায়ী)
+    # প্রতি ৩ ঘণ্টা পর পর রান হবে (limitation এড়াতে সেরা সময়)
     - cron: '0 */3 * * *'
   workflow_dispatch: # চাইলে গিটহাব থেকে ম্যানুয়ালিও রান করা যাবে
 
