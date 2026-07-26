@@ -1,27 +1,27 @@
-name: Auto Update Sports Events
+name: Sports Events Auto Updater
 
 on:
   schedule:
-    # প্রতি ৪ ঘণ্টা পরপর চলবে (দিনে ৬ বার) - এতে লিমিট কখনোই শেষ হবে না!
-    - cron: '0 */4 * * *'
-  workflow_dispatch: # ম্যানুয়ালি বোতাম চেপে চালানোর জন্য
+    # প্রতি ১২ ঘণ্টা পর পর স্বয়ংক্রিয়ভাবে রান করবে
+    - cron: '0 */12 * * *'
+  workflow_dispatch: # ম্যানুয়ালি রান করার বাটন
 
 jobs:
   update-events:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install Dependencies
-        run: npm install
+        run: npm install axios cheerio firebase-admin --no-save
 
       - name: Run Updater Script
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node index.js # অথবা আপনার স্ক্রিপ্টের নাম যদি scripts/update_events.js হয়, তবে node scripts/update_events.js দিবেন
+        run: node index.js # আপনার ফাইলের নাম UPDATE_EVENTS_GITHUB_SCRIPT.js হলে এখানে node UPDATE_EVENTS_GITHUB_SCRIPT.js দেবেন
