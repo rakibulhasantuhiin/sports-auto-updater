@@ -1,13 +1,15 @@
 /**
- * 🚀 TUHINEXT TV - SPORTS AUTOMATIC UPDATER SCRIPT (PRO V3 - SMART CAP & QUOTA SAFE)
+ * 🚀 TUHINEXT TV - SPORTS AUTOMATIC UPDATER SCRIPT (PRO V4 - SMART CAP, CHANNELS & QUOTA SAFE)
  * 
- * 📋 নিয়মানুযায়ী বৈশিষ্ট্যসমূহ (Rules Enforced):
+ * 📋 নিয়মানুযায়ী বৈশিষ্ট্যসমূহ (Rules Enforced):
  * ১. মোট ইভেন্ট সংখ্যা ১৫ থেকে ২০টির মধ্যে থাকবে, কোনোভাবেই ২০টির বেশি হবে না (MAX_EVENTS = 20)।
  * ২. সর্বোচ্চ বিস্তার (Maximum Diversity): ক্রিকেট এবং ফুটবল ইভেন্ট সমানভাবে (Interleaved) সাজানো হয়।
- * ৩. স্মার্ট ক্যাপ (Smart Cap): যতক্ষণ পর্যন্ত আগের ইভেন্ট শেষ (Expire) না হবে, নতুন কোনো ইভেন্ট যুক্ত হবে না।
- *    যেমন: ২০টি ইভেন্ট থাকলে নতুন ইভেন্ট যুক্ত হবে না। ১৮টি থাকলে সামনের সিডিউল থেকে ঠিক ২টি নতুন ইভেন্ট যুক্ত হবে।
- * ৪. কোটা সুরক্ষা (Quota Protection): ফায়ারবেস ফ্রি কোটা (RESOURCE_EXHAUSTED) শেষ হলে কোনো এরর বা রেড মার্ক
- *    ছাড়াই সুন্দরভাবে (Exit Code 0) বন্ধ হবে।
+ * ৩. স্মার্ট ক্যাপ (Smart Cap): যতক্ষণ পর্যন্ত আগের ইভেন্ট শেষ (Expire) না হবে, ততক্ষণ নতুন কোনো ইভেন্ট যুক্ত হবে না।
+ *    যেমন: ২০টি ইভেন্ট থাকলে নতুন ইভেন্ট যুক্ত হবে না। যখন ১-২টি ইভেন্ট শেষ হয়ে ১৮ বা তার নিচে নেমে আসবে, 
+ *    তখন সামনের সিডিউল থেকে ঠিক ততটি নতুন ইভেন্ট যুক্ত হবে যেন মোট সংখ্যা ২০ হয়।
+ * ৪. অটো-ক্লিনআপ (Auto Cleanup): যে ইভেন্টগুলোর মেয়াদ শেষ হয়ে গেছে (বা ১২ ঘণ্টার বেশি পুরোনো), সেগুলো স্বয়ংক্রিয়ভাবে ডিলিট হবে।
+ * ৫. অটো-স্ট্রিমিং চ্যানেল (Auto Stream Channels): প্রতিটি নতুন ইভেন্টের সাথে স্বয়ংক্রিয়ভাবে লাইভ স্ট্রিমিং সার্ভার (Server 1 - FHD, Server 2 - HD) যুক্ত হবে।
+ * ৬. কোটা সুরক্ষা (Quota Protection): ফায়ারবেস ফ্রি কোটা (RESOURCE_EXHAUSTED) শেষ হলে কোনো এরর বা রেড মার্ক ছাড়াই সুন্দরভাবে (Exit Code 0) বন্ধ হবে।
  */
 
 const axios = require('axios');
@@ -17,6 +19,7 @@ const admin = require('firebase-admin');
 // ⚙️ কনফিগারেশন সেটিংস
 const MAX_EVENTS = 20; // সর্বোচ্চ ইভেন্ট লিমিট
 const EXPIRATION_BUFFER_MS = 2 * 3600 * 1000; // ইভেন্ট শেষ হওয়ার পর ২ ঘণ্টা পর্যন্ত ডেটাবেসে থাকবে
+const MAX_EVENT_AGE_MS = 12 * 3600 * 1000; // ১২ ঘণ্টার বেশি পুরোনো ইভেন্ট স্বয়ংক্রিয়ভাবে ডিলিট হবে
 
 // 1. Initialize Firebase Admin SDK
 let db;
@@ -52,7 +55,7 @@ function cleanString(str) {
     return str.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
 }
 
-// Standard military time parser
+// Standard military time parser (e.g., "8.00pm" or "12.30am" -> "20:00:00")
 function parseTime(timeStr) {
     let clean = timeStr.trim().toLowerCase();
     const isPm = clean.includes('pm');
@@ -97,7 +100,7 @@ function parseSkySportsDateTime(dateStr, timeStr) {
     } catch (e) {
         console.error("Error parsing date-time:", dateStr, timeStr, e.message);
     }
-    return Date.now() + 3600000;
+    return Date.now() + 3600000; // Fallback 1 hour in future
 }
 
 // 2. CRICKET FETCHING ENGINE (Cricbuzz Primary with ESPN Cricinfo Fallback)
@@ -128,14 +131,15 @@ async function fetchCricketEvents() {
                         const team1 = teams[0].trim();
                         const team2 = teams[1].trim();
                         const eventId = hashString(`cricket_${cleanString(team1)}_${cleanString(team2)}`);
+                        const nowTime = Date.now();
                         
                         cricketEvents.push({
                             id: eventId,
                             name: "International Cricket",
                             category: "cricket",
                             title: mainPart,
-                            startTime: Date.now(),
-                            endTime: Date.now() + 8 * 3600 * 1000,
+                            startTime: nowTime, // Live matches start now
+                            endTime: nowTime + 8 * 3600 * 1000, // 8-hour match duration
                             team1Name: team1,
                             team1Logo: "https://cdn-icons-png.flaticon.com/512/3076/3076840.png",
                             team2Name: team2,
@@ -185,14 +189,15 @@ async function fetchCricketEvents() {
                 team1 = team1.replace(/\([^)]*\)/g, '').trim();
                 team2 = team2.replace(/\([^)]*\)/g, '').trim();
                 const eventId = hashString(`cricket_${cleanString(team1)}_${cleanString(team2)}`);
+                const nowTime = Date.now();
                 
                 cricketEvents.push({
                     id: eventId,
                     name: "International Cricket",
                     category: "cricket",
                     title: `${team1} vs ${team2}`,
-                    startTime: Date.now(),
-                    endTime: Date.now() + 8 * 3600 * 1000,
+                    startTime: nowTime,
+                    endTime: nowTime + 8 * 3600 * 1000,
                     team1Name: team1,
                     team1Logo: "https://cdn-icons-png.flaticon.com/512/3076/3076840.png",
                     team2Name: team2,
@@ -248,6 +253,7 @@ async function fetchFootballEvents() {
                     if (team1Name && team2Name && currentDateStr) {
                         const startTime = parseSkySportsDateTime(currentDateStr, timeText);
                         
+                        // Only add upcoming or currently playing matches
                         if (startTime >= Date.now() - 3 * 3600 * 1000) {
                             const eventIdStr = `football_${cleanString(team1Name)}_${cleanString(team2Name)}_${cleanString(currentDateStr)}`;
                             
@@ -257,7 +263,7 @@ async function fetchFootballEvents() {
                                 category: "football",
                                 title: `${team1Name} vs ${team2Name}`,
                                 startTime: startTime,
-                                endTime: startTime + 2 * 3600 * 1000,
+                                endTime: startTime + 2.5 * 3600 * 1000, // 2.5-hour football match duration
                                 team1Name: team1Name,
                                 team1Logo: team1Logo,
                                 team2Name: team2Name,
@@ -294,12 +300,13 @@ function interleaveEvents(cricketList, footballList) {
 async function syncAllEvents() {
     console.log("🚀 Starting Tuhinext TV Smart Sports Updater...");
     
-    const collectionRef = db.collection('live_events');
+    const liveEventsRef = db.collection('live_events');
+    const eventChannelsRef = db.collection('event_channels');
     let snapshot;
     
     // 🛡️ কোটা সুরক্ষা (Quota Safe Read): কোটা শেষ থাকলে এরর না দেখিয়ে ক্লিন বন্ধ হবে
     try {
-        snapshot = await collectionRef.get();
+        snapshot = await liveEventsRef.get();
     } catch (error) {
         if (error.code === 8 || error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('Quota exceeded')) {
             console.log("\n⚠️ [QUOTA NOTICE / কোটা নোটিশ]");
@@ -319,26 +326,54 @@ async function syncAllEvents() {
     // ১. ডেটাবেসে থাকা বর্তমান ইভেন্ট যাচাই ও মেয়াদোত্তীর্ণ ইভেন্ট ডিলিট করা
     const existingEvents = new Map();
     let expiredCount = 0;
+    const expiredEventIds = [];
     
     snapshot.forEach(doc => {
         const data = doc.data();
-        const endTime = data.endTime || 0;
+        const startTime = data.startTime || 0;
+        let endTime = data.endTime || 0;
         
-        // ইভেন্ট শেষ হওয়ার পর অতিরিক্ত ২ ঘণ্টা পার হয়ে গেলে সেটি ডিলিট হবে
-        if (endTime > 0 && now > endTime + EXPIRATION_BUFFER_MS) {
+        // যদি পুরোনো ইভেন্টে endTime না থাকে (0 হয়), তবে startTime থেকে ৬ ঘণ্টা পর endTime ধরে নেওয়া হবে
+        if (endTime === 0 && startTime > 0) {
+            endTime = startTime + 6 * 3600 * 1000;
+        }
+        
+        // ডিলিট করার শর্ত: ইভেন্ট শেষ হওয়ার ২ ঘণ্টা পার হলে অথবা ১২ ঘণ্টার বেশি পুরোনো হলে
+        const isExpired = (endTime > 0 && now > endTime + EXPIRATION_BUFFER_MS) || 
+                          (startTime > 0 && now > startTime + MAX_EVENT_AGE_MS);
+        
+        if (isExpired) {
             batch.delete(doc.ref);
             batchOperations++;
             expiredCount++;
-            console.log(`🗑️ Expired Event removed: ${data.title}`);
+            expiredEventIds.push(doc.id);
+            console.log(`🗑️ Expired/Old Event removed: [${data.category}] ${data.title}`);
         } else {
             existingEvents.set(doc.id, { ref: doc.ref, data: data });
         }
     });
     
+    // ডিলিট হওয়া ইভেন্টের স্ট্রিমিং চ্যানেলগুলোও event_channels থেকে মুছে ফেলা হবে
+    if (expiredEventIds.length > 0) {
+        try {
+            const channelsSnap = await eventChannelsRef.get();
+            channelsSnap.forEach(chDoc => {
+                const chData = chDoc.data();
+                if (expiredEventIds.includes(chData.eventId)) {
+                    batch.delete(chDoc.ref);
+                    batchOperations++;
+                }
+            });
+        } catch (e) {
+            console.warn("⚠️ Warning checking event channels for deletion:", e.message);
+        }
+    }
+    
     const activeCount = existingEvents.size;
     console.log(`📊 বর্তমান অ্যাক্টিভ ইভেন্ট সংখ্যা: ${activeCount} / সর্বোচ্চ লিমিট: ${MAX_EVENTS} (Expired Removed: ${expiredCount})`);
     
-    // ২. নিয়ম যাচাই: যদি আগে থেকেই ২০টি ইভেন্ট থাকে, তবে নতুন ইভেন্ট যুক্ত করা হবে না!
+    // ২. নিয়ম যাচাই: যদি আগে থেকেই ১৯ বা ২০টি ইভেন্ট থাকে, তবে নতুন ইভেন্ট যুক্ত করা হবে না!
+    // সংখ্যা যখন ১৮ বা তার নিচে নামবে, তখনই শুধুমাত্র নতুন ইভেন্ট যুক্ত করা হবে।
     const slotsAvailable = MAX_EVENTS - activeCount;
     
     if (slotsAvailable <= 0) {
@@ -383,19 +418,46 @@ async function syncAllEvents() {
     
     let addedCount = 0;
     eventsToAdd.forEach((event, idx) => {
-        event.orderIndex = activeCount + idx;
-        const docRef = collectionRef.doc(event.id);
+        event.orderIndex = activeCount + idx; // সুন্দর সিরিয়াল অর্ডারিং
+        
+        // ১. ইভেন্ট ডকুমেন্ট যুক্ত করা
+        const docRef = liveEventsRef.doc(event.id);
         batch.set(docRef, event);
         batchOperations++;
         addedCount++;
-        console.log(`➕ নতুন ইভেন্ট যুক্ত করা হলো (${activeCount + addedCount}/${MAX_EVENTS}): [${event.category.toUpperCase()}] ${event.title}`);
+        
+        // ২. প্রতিটি ইভেন্টের জন্য স্বয়ংক্রিয় স্ট্রিমিং চ্যানেল (Server 1 & Server 2) যুক্ত করা
+        const ch1Id = hashString(`ch1_${event.id}`);
+        const ch2Id = hashString(`ch2_${event.id}`);
+        
+        batch.set(eventChannelsRef.doc(ch1Id), {
+            id: ch1Id,
+            eventId: event.id,
+            name: "Server 1 - FHD (Main Stream)",
+            streamUrl: "https://d1211whpimeups.cloudfront.net/smil:rtbgo/chunklist.m3u8",
+            orderIndex: 0,
+            isHidden: false
+        });
+        batchOperations++;
+        
+        batch.set(eventChannelsRef.doc(ch2Id), {
+            id: ch2Id,
+            eventId: event.id,
+            name: "Server 2 - HD (Backup Stream)",
+            streamUrl: "http://198.195.239.50:8095/tsports/tracks-v1a1/mono.m3u8",
+            orderIndex: 1,
+            isHidden: false
+        });
+        batchOperations++;
+        
+        console.log(`➕ নতুন ইভেন্ট ও স্ট্রিমিং চ্যানেল যুক্ত করা হলো (${activeCount + addedCount}/${MAX_EVENTS}): [${event.category.toUpperCase()}] ${event.title}`);
     });
     
     // ৭. ব্যাচ সেভ করা
     if (batchOperations > 0) {
         try {
             await batch.commit();
-            console.log(`🎉 SUCCESS! ডেটাবেস সফলভাবে আপডেট হয়েছে: +${addedCount}টি নতুন ইভেন্ট যুক্ত করা হয়েছে, -${expiredCount}টি পুরোনো ইভেন্ট মুছে ফেলা হয়েছে।`);
+            console.log(`🎉 SUCCESS! ডেটাবেস সফলভাবে আপডেট হয়েছে: +${addedCount}টি নতুন ইভেন্ট (এবং স্ট্রিমিং চ্যানেল) যুক্ত করা হয়েছে, -${expiredCount}টি পুরোনো ইভেন্ট মুছে ফেলা হয়েছে।`);
             console.log(`📈 সর্বমোট অ্যাক্টিভ ইভেন্ট: ${activeCount + addedCount} / ${MAX_EVENTS}`);
         } catch (error) {
             if (error.code === 8 || error.message.includes('RESOURCE_EXHAUSTED') || error.message.includes('Quota exceeded')) {
